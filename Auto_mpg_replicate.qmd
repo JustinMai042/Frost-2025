@@ -1,0 +1,303 @@
+---
+title: "Trying to repeat atuo mpg with tidy models"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(RWeka)
+library(readr)
+
+
+partition_indices <- read_lines("/Users/justinmai/Documents/Rprojects/Research Code/regression/data/auto_mpg/auto_mpg_partitions.txt") |>
+  str_split("\\s+") |>
+  map(as.numeric)
+
+auto_mpg <- read.delim("/Users/justinmai/Downloads/auto+mpg/auto-mpg.txt", header = FALSE, sep = "")
+
+colnames(auto_mpg) <- c("mpg", "cylinders", "displacement", "horsepower", 
+                        "weight", "acceleration", "model_year", "origin", "car_name")
+
+auto_mpg$mpg <- as.numeric(auto_mpg$mpg)
+auto_mpg$cylinders <- as.factor(auto_mpg$cylinders)
+auto_mpg$displacement <- as.numeric(auto_mpg$displacement)
+auto_mpg$horsepower <- as.numeric(auto_mpg$horsepower)
+auto_mpg$weight <- as.numeric(auto_mpg$weight)
+auto_mpg$acceleration <- as.numeric(auto_mpg$acceleration)
+auto_mpg$model_year <- as.factor(auto_mpg$model_year)
+auto_mpg$origin <- as.factor(auto_mpg$origin)
+auto_mpg$car_name <- as.character(auto_mpg$car_name)
+
+
+
+
+```
+
+```{r}
+
+#Testind tidymodels recipe and splitting
+tidy_split <- initial_split(auto_mpg, prop = .5)
+
+tidy_train <- training(tidy_split)
+tidy_test <- testing(tidy_split)
+
+
+
+
+cook <- recipe(mpg~., data = tidy_train)|>
+  step_zv(all_numeric(), -all_outcomes())|>
+  step_corr(all_numeric(), -all_outcomes(), threshold = .80)|>
+  step_BoxCox(all_numeric(), -all_outcomes())|>
+  step_normalize(all_numeric(), -all_outcomes())|>
+  step_dummy(all_nominal(), -all_of("car_name"))|>
+  step_impute_mean(all_numeric(), -all_outcomes())|>
+  prep()
+  
+  
+new_dat <- juice(cook)
+
+cook
+
+
+  
+```
+
+```{r}
+factors <- names(select_if(auto_mpg, is.factor))
+numbers <- names(select_if(auto_mpg, is.numeric))
+characters <- names(select_if(auto_mpg, is.character))
+print(factors); print(numbers); print(characters)
+```
+
+```{r}
+library(tidymodels)
+library(readr)
+
+
+auto_mpg_raw <- auto_mpg
+
+auto_mpg <- auto_mpg_raw |>
+  mutate(
+    origin = factor(origin, labels = c("USA", "Europe", "Japan"))
+  )
+
+auto_mpg_recipe <- recipe(mpg ~ ., data = auto_mpg) |>
+  update_role(car_name, new_role = "id") |>
+  step_impute_mean(all_numeric_predictors()) |>
+  step_BoxCox(all_numeric(), -all_outcomes())|>
+  step_normalize(all_numeric(), -all_outcomes())|>
+  step_zv(all_predictors()) |>
+  step_corr(all_numeric_predictors(), threshold = 0.9) |> 
+  step_dummy(all_nominal_predictors())
+
+prepared_recipe <- prep(auto_mpg_recipe)
+
+processed_data <- juice(prepared_recipe)
+```
+
+```{r}
+
+partition_indices <- list()
+partition_indices[[1]] <- c(357, 106, 148, 227, 358, 80, 353, 370, 258, 245, 24, 393, 69, 265, 396, 295, 191, 274, 377, 145, 294, 392, 387, 389, 47, 100, 144, 5, 142, 321, 126, 177, 220, 181, 68, 301, 242,
+287, 39, 260, 384, 378, 231, 278, 196, 187, 355, 9, 168, 256, 362, 166, 298, 152, 85, 25, 35, 108, 367, 225, 138, 308, 99, 154, 112, 217, 86, 159, 253, 28, 288, 111, 381, 113,
+109, 335, 328, 352, 125, 248, 306, 338, 226, 368, 103, 237, 64, 222, 38, 76, 45, 74, 19, 354, 267, 313, 241, 317, 124, 243, 365, 195, 105, 376, 292, 186, 63, 310, 139, 268, 173,
+281, 210, 102, 123, 42, 4, 202, 29, 320, 178, 275, 137, 134, 48, 207, 300, 290, 57, 62, 160, 323, 21, 10, 170, 375, 157, 147, 276, 349, 131, 176, 304, 61, 66, 185, 115, 44,
+380, 27, 215, 345, 363, 81, 327, 122, 251, 128, 318, 67, 51, 364, 212, 296, 183, 206, 96, 15, 78, 347, 77, 372, 190, 193, 88, 344, 199, 143, 164, 133, 197, 312, 283, 382, 341,
+250, 41, 289, 153, 198, 114, 394, 263, 266, 316, 58, 120, 23, 169, 333, 156, 53, 43, 101, 218, 342, 373, 214, 343, 49, 135, 180, 240, 391, 175, 150, 270, 118, 172, 171, 255, 374,
+30, 182, 89, 211, 224, 194, 8, 71, 395, 203, 22, 269, 104, 311, 334, 244, 174, 386, 72, 189, 91, 330, 229, 163, 33, 65, 20, 331, 140, 325, 359, 149, 87, 70, 16, 339, 221,
+52, 129, 158, 348, 291, 397, 94, 259, 351, 336, 233, 132, 264, 14, 326, 205, 37, 388, 32, 302, 184, 209, 282, 165, 285, 305, 6, 155, 36, 18, 356, 299, 204, 315, 366, 141, 179,
+273, 11, 12, 371, 92, 254, 385, 340, 136, 235, 98, 17, 307, 7, 161, 13, 346, 146, 369, 201, 236, 322, 280, 228, 262, 271, 319, 31, 90, 398, 379, 167, 55, 293, 79, 239, 234,
+26, 303, 130, 83, 249, 232, 93, 119, 200, 60, 257, 272, 213, 324, 309, 390, 223, 59, 116, 3, 314, 230, 208, 192, 279, 117, 82, 110, 73, 216, 252, 56, 97, 84, 46, 361, 54,
+350, 337, 286, 238, 261, 107, 34, 127, 188, 40, 50, 383, 360, 162, 277, 219, 75, 247, 297, 2, 332, 151, 1, 284, 121, 95, 329, 246)
+
+
+```
+
+```{r}
+
+
+exact_shuffle <- partition_indices[[1]]
+
+
+```
+
+```{r}
+library(caret)
+library(tidymodels)
+library(MASS)
+library(RWeka)
+library(RWeka)
+auto_mpg_imputed <- auto_mpg |> 
+  mutate(across(where(is.numeric), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .)))
+
+
+shuffled_data <- auto_mpg_imputed[exact_shuffle,]
+
+n <- nrow(shuffled_data)
+n_train <- floor(0.5 * n)
+n_val <- floor(0.25 * n)
+n_test <- n - n_train - n_val
+
+train_set <- shuffled_data[1:n_train, ]
+val_set   <- shuffled_data[(n_train + 1):(n_train + n_val), ]
+test_set  <- shuffled_data[(n_train + n_val + 1):n, ]
+
+
+```
+
+```{r}
+
+
+rec <- recipe(mpg ~ ., data = train_set) |>
+  step_nzv(all_predictors()) |>
+  step_novel(car_name) |>
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) |>
+  step_BoxCox(mpg) |>
+  step_normalize(all_predictors())
+
+rec_prep <- prep(rec, training = train_set)
+
+train_processed <- bake(rec_prep, new_data = NULL)
+val_processed <- bake(rec_prep, new_data = val_set)
+test_processed <- bake(rec_prep, new_data = test_set)
+
+m5_model <- M5P(mpg ~ ., data = train_processed)
+
+
+val_preds <- predict(m5_model, newdata = val_processed)
+test_preds <- predict(m5_model, newdata = test_processed)
+
+R2_val <- cor(val_preds, val_processed$mpg)^2
+RMSE_val <- sqrt(mean((val_preds - val_processed$mpg)^2))
+MAE_val <- mean(abs(val_preds - val_processed$mpg))
+
+R2_test <- cor(test_preds, test_processed$mpg)^2
+RMSE_test <- sqrt(mean((test_preds - test_processed$mpg)^2))
+MAE_test <- mean(abs(test_preds - test_processed$mpg))
+
+cat("Validation R²:", R2_val, " RMSE:", RMSE_val, " MAE:", MAE_val, "\n")
+cat("Test R²:", R2_test, " RMSE:", RMSE_test, " MAE:", MAE_test, "\n")
+
+
+```
+
+```{r}
+
+inital_val <- initial_validation_split(shuffled_data, strata=mpg, prop=c(.5, .25))
+
+train_set <- training(val_set)
+val_set <- validation(val_set)
+test_set <- testing(val_set)
+
+
+rf_mod <- rand_forest(mtry = tune(),min_n = tune(),trees = 1000)|>
+  set_engine('ranger', num.threads = 7)|>
+  set_mode('regression')
+
+
+
+
+rec <- recipe(mpg ~ ., data = train_set) |>
+  step_nzv(all_predictors()) |>
+  step_novel(car_name) |>
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) |>
+  step_BoxCox(mpg) |>
+  step_normalize(all_predictors())
+
+
+rf_wf <- workflow()|>
+  add_model(rf_mod)|>
+  add_recipe(rec)
+
+rf_res <- 
+  rf_wf %>% 
+  tune_grid(val_set,
+            grid = 25,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+
+
+```
+
+```{r}
+set.seed(123)
+val_split <- initial_validation_split(
+  shuffled_data,
+  strata = mpg,
+  prop   = c(.50, .25)   # 50 % train, 25 % validation → 25 % test
+)
+
+
+train_set <- training(val_split)     
+val_set   <- validation(val_split)    
+test_set  <- testing(val_split)      
+
+
+
+rf_mod <- rand_forest(mtry = tune(),
+                      min_n = tune(),
+                      trees = 1000) %>%           # or |> but without “v”
+  set_engine("ranger", num.threads = 7) %>%
+  set_mode("regression")
+
+rec <- recipe(mpg ~ ., data = train_set) |>
+  step_nzv(all_predictors()) |>
+  step_novel(car_name) |>
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) |>
+  step_BoxCox(mpg) |>
+  step_normalize(all_predictors())
+
+rf_wf <- workflow() |>
+  add_model(rf_mod) |>
+  add_recipe(rec)
+
+rf_res <- rf_wf |>
+  tune_grid(
+    val_set,
+    grid    = 25,
+    control = control_grid(save_pred = TRUE),
+    metrics = metric_set(rmse, rsq)   
+  )
+
+```
+
+```{r}
+
+set.seed(123)
+val_split <- initial_validation_split(
+  shuffled_data,
+  strata = mpg,
+  prop   = c(.50, .25)   
+
+train_set <- training(val_split)
+val_set   <- validation(val_split)
+test_set  <- testing(val_split)
+
+
+
+val_rs <- validation_set(val_split)   
+
+
+rf_res <- rf_wf %>% 
+  tune_grid(
+    resamples = val_rs,         
+    grid      = 25,
+    metrics   = metric_set(rmse, rsq),
+    control   = control_grid(save_pred = TRUE)
+  )
+
+
+best_params <- select_best(rf_res, metric = "rmse")
+
+final_wf <- finalize_workflow(rf_wf, best_params)
+
+
+final_fit <- fit(final_wf, bind_rows(train_set, val_set))
+test_metrics <- final_fit %>%
+  predict(new_data = test_set) %>%
+  bind_cols(test_set) %>%
+  metrics(truth = mpg, estimate = .pred)
+
+```
