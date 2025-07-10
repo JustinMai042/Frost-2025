@@ -8,7 +8,7 @@ editor: visual
 library(simstudy)
 
 
-# 1) Define predictors
+
 def <- defData(varname = "x1", formula = "0;1", dist = "uniform")
 def <- defData(def,    varname = "x2", formula = "0;1", dist = "uniform")
 def <- defData(def,    varname = "x3", formula = 0,     variance = 1, dist = "normal")
@@ -16,7 +16,6 @@ def <- defData(def,    varname = "x4", formula = 0,     variance = 1, dist = "t"
 def <- defData(def,    varname = "x5", formula = "0.8*x1", variance = 0.2, dist = "normal")
 def <- defData(def,    varname = "x6", formula = "0.8*x2", variance = 0.2, dist = "normal")
 
-# 2) True mean and scale
 def <- defData(def, varname = "mu",
                formula = "sin(2*x1*x2) + (x3 - 0.5)^2 + 0.5 + 2*x5*x6",
                dist    = "nonrandom")
@@ -314,147 +313,122 @@ print(highly_correlated_pair)
 ```
 
 ```{r}
-library(tidyverse)
-library(tidymodels)
-library(readr)
 
-#' @exampleS
-#'
-#' # --- Example 1: XGBoost Model ---
-#' # xgb_spec <- boost_tree(
-#' #   trees = tune(),
-#' #   tree_depth = tune(),
-#' #   learn_rate = 0.1
-#' # ) |>
-#' #   set_engine("xgboost") |>
-#' #   set_mode("regression")
-#'
-#' # xgb_results <- run_ml_analysis(
-#' #   model_spec = xgb_spec,
-#' #   file_path = "sample_data.csv",
-#' #   target_variable = "y"
-#' # )
-#' # print(xgb_results$final_metrics)
-#'
-#' # --- Example 2: Random Forest Model ---
-#' # rf_spec <- rand_forest(
-#' #   mtry = tune(),
-#' #   trees = 1000,
-#' #   min_n = tune()
-#' # ) |>
-#' #   set_engine("ranger") |>
-#' #   set_mode("regression")
-#'
-#' # rf_results <- run_ml_analysis(
-#' #   model_spec = rf_spec,
-#' #   file_path = "sample_data.csv",
-#' #   target_variable = "y"
-#' # )
-#' # print(rf_results$final_metrics)
+library(MASS)   
+library(simstudy)
 
-run_ml_analysis <- function(model_spec,
-                            file_path,
-                            target_variable,
-                            train_prop = 0.6,
-                            validation_prop = 0.2,
-                            tune_grid_size = 20,
-                            seed = 123) {
+set.seed(42)
+
+N  <- 10000
+p  <- 12
+rho <- 0.7 
 
 
-  tryCatch({
-    df <- read_csv(file_path, show_col_types = FALSE)
-  }, error = function(e) {
-    stop("Error reading the file. Please check if the file_path is correct.")
-  })
-
-  if (!target_variable %in% names(df)) {
-    stop(paste("The target variable '", target_variable, "' was not found in the data.", sep = ""))
-  }
-
-  target_sym <- rlang::sym(target_variable)
-
-
-  set.seed(seed)
-  split_obj <- initial_validation_split(
-    df,
-    strata = !!target_sym,
-    prop = c(train_prop, validation_prop)
-  )
-  cat("Data splitting complete.\n")
-  cat("Training set size:", nrow(training(split_obj)), "\n")
-  cat("Validation set size:", nrow(validation(split_obj)), "\n")
-  cat("Test set size:", nrow(testing(split_obj)), "\n\n")
-
-
-  rec <- recipe(!!target_sym ~ ., data = training(split_obj)) |>
-    step_rm(all_predictors(), -all_numeric()) |>
-    step_dummy(all_nominal(), one_hot = TRUE) |>
-    step_zv(all_predictors()) |>
-    step_corr(all_numeric(), threshold = 0.9) |>
-    step_normalize(all_numeric())
-
-  
-  wf <- workflow() |>
-    add_recipe(rec) |>
-    add_model(model_spec) 
-
-  
-  set.seed(seed)
-  grid <- grid_latin_hypercube(
-    extract_parameter_set_dials(wf),
-    size = tune_grid_size
-  )
-
-  val_rs <- validation_set(split_obj)
-
-  cat("Starting hyperparameter tuning...\n")
-  tune_res <- tune_grid(
-    wf,
-    resamples = val_rs,
-    grid      = grid,
-    metrics   = metric_set(rmse, rsq, mae)
-  )
-  cat("Tuning complete.\n\n")
-
-  best_params <- select_best(tune_res, "rmse")
-  cat("Best hyperparameters selected:\n")
-  print(best_params)
-  cat("\n")
-
-  
-  final_wf <- finalize_workflow(wf, best_params)
-
-  
-  final_split_prop <- train_prop + validation_prop
-  final_split <- initial_split(df, prop = final_split_prop, strata = !!target_sym)
-
-  cat("Fitting final model and evaluating on the test set...\n")
-  final_fit <- last_fit(
-    final_wf,
-    final_split
-  )
-  cat("Final evaluation complete.\n\n")
-
-  final_metrics <- collect_metrics(final_fit)
-  cat("Final performance metrics on the test set:\n")
-  print(final_metrics)
-  cat("\n")
-
-  
-  return(
-    list(
-      final_metrics = final_metrics,
-      best_hyperparameters = best_params,
-      final_fitted_workflow = final_fit
-    )
-  )
+Sigma <- diag(p)
+pairs <- list(c(1,2), c(3,4), c(5,6))
+for(pr in pairs) {
+  Sigma[pr[1], pr[2]] <- rho
+  Sigma[pr[2], pr[1]] <- rho
 }
 
 
+X <- mvrnorm(N, mu = rep(0, p), Sigma = Sigma)
+colnames(X) <- paste0("X", 1:p)
+df <- as.data.frame(X)
 
+
+error_sd      <- sqrt(1 + 2 * df$X1^2)
+df$epsilon    <- rnorm(N, 0, error_sd)
+
+
+df$Y <- 1 + 1.5*df$X1 - 2*df$X2 + 0.5*df$X3 + df$epsilon
+
+
+out_idx <- sample.int(N, 500)
+df$Y[out_idx] <- df$Y[out_idx] + rnorm(500, mean = 0, sd = 10)
+
+
+summary(df$Y)
 ```
 
 ```{r}
 
-sarcos<-readARFF("/Users/justinmai/Downloads/file22f166a1669bb.arff", data.reader = "readr", tmp.file = tempfile())
+library(tidymodels)
+library(rules)
+library(Cubist)
+library(rlang)
+
+
+run_ml_analysis <- function(model_spec,
+                            data,
+                            target = "Y",
+                            train_prop = 0.60,
+                            val_prop = 0.20,
+                            grid_size = 50,
+                            seed = 123) {
+
+  if (!target %in% names(data))
+    stop(paste("Column `{target}` not found."))
+
+  formula_obj <- as.formula(paste(target, "~ ."))
+  target_sym  <- sym(target)
+
+  set.seed(seed)
+  split1     <- initial_split(data, prop = train_prop + val_prop, strata = !!target_sym)
+  train_val  <- training(split1)
+  test_set   <- testing(split1)
+
+  folds <- vfold_cv(train_val, v = 2, strata = !!target_sym)
+
+  rec <- recipe(formula_obj, data = train_val) |>
+    step_dummy(all_nominal_predictors(), one_hot = TRUE) |>
+    step_zv(all_predictors()) |>
+    step_corr(all_numeric_predictors(), threshold = 0.6) |>
+    step_normalize(all_numeric_predictors())
+
+  wf <- workflow() |>
+    add_recipe(rec) |>
+    add_model(model_spec)
+
+  grid <- grid_latin_hypercube(parameters(wf), size = grid_size)
+
+  tune_res <- tune_grid(
+    wf,
+    resamples = folds,
+    grid      = grid,
+    metrics   = metric_set(rmse, rsq, mae)
+  )
+
+  best <- select_best(tune_res, metric = "rmse")
+  final_wf  <- finalize_workflow(wf, best)
+  final_fit <- last_fit(final_wf, split1)
+
+  list(
+    metrics   = collect_metrics(final_fit),
+    best_pars = best,
+    workflow  = extract_workflow(final_fit)
+  )
+}
+
+cub_spec <- cubist_rules(
+  committees = tune(),
+  neighbors  = tune()
+) |>
+  set_engine("Cubist") |>
+  set_mode("regression")
+
+result_cub <- run_ml_analysis(
+  model_spec = cub_spec,
+  data       = df,
+  target     = "Y"
+)
+
+result_cub$metrics
+
+```
+
+```{r}
+lmod <- lm(Y~. ,df)
+
+plot(lmod)
 ```
