@@ -1,0 +1,460 @@
+---
+title: "SimData with methods"
+format: html
+editor: visual
+---
+
+```{r}
+library(simstudy)
+
+
+# 1) Define predictors
+def <- defData(varname = "x1", formula = "0;1", dist = "uniform")
+def <- defData(def,    varname = "x2", formula = "0;1", dist = "uniform")
+def <- defData(def,    varname = "x3", formula = 0,     variance = 1, dist = "normal")
+def <- defData(def,    varname = "x4", formula = 0,     variance = 1, dist = "t", df = 3)
+def <- defData(def,    varname = "x5", formula = "0.8*x1", variance = 0.2, dist = "normal")
+def <- defData(def,    varname = "x6", formula = "0.8*x2", variance = 0.2, dist = "normal")
+
+# 2) True mean and scale
+def <- defData(def, varname = "mu",
+               formula = "sin(2*x1*x2) + (x3 - 0.5)^2 + 0.5 + 2*x5*x6",
+               dist    = "nonrandom")
+def <- defData(def, varname = "sigma",
+               formula = "1 + 2*abs(x3)",
+               dist    = "nonrandom")
+
+# 3) Heavy-tailed response: t-distributed around μ with scale σ and df=3
+def <- defData(def, varname   = "y",
+               formula   = "mu",
+               variance  = "sigma",
+               dist      = "t",
+               df        = 3)
+
+# 4) Generate data
+sim_df <- genData(1000, def)
+
+```
+
+```{r}
+library(farff)
+
+grid_stability <- readARFF("/Users/justinmai/Downloads/file22f1652de1c8a.arff", data.reader = "readr", tmp.file = tempfile())
+```
+
+```{r}
+library(tidymodels)
+
+# 1. Initial three-way split (train / validation / test)
+set.seed(123)
+split_obj <- initial_validation_split(
+  df,
+  strata = NULL,
+  prop = c(0.6, 0.2) ,      # 60% train, 20% validation, 20% test
+  pool = 0.1
+)                           
+
+train_full <- training(split_obj)
+valid_data <- validation(split_obj)
+test_data  <- testing(split_obj)
+
+# 2. Preprocessing recipe
+rec <- recipe(y ~ ., data = train_full) |>
+  step_rm(all_predictors(), -all_numeric()) |>
+  step_dummy(all_nominal(), one_hot = TRUE) |>
+  step_zv(all_predictors()) |>
+  step_corr(all_numeric(), threshold = 0.9) |>
+  step_normalize(all_numeric())
+
+# 3. Model specification (XGBoost regression)
+xgb_spec <- boost_tree(
+  trees      = tune(),
+  tree_depth = tune(),
+  learn_rate = 0.1
+) |>
+  set_engine("xgboost") |>
+  set_mode("regression")
+
+# 4. Workflow assembly
+wf <- workflow() |>
+  add_recipe(rec) |>
+  add_model(xgb_spec)
+
+# 5. Hyperparameter grid 
+grid <- grid_latin_hypercube(
+  extract_parameter_set_dials(wf),
+  size = 20
+)
+
+# 6. Tune on the train/validation split
+#    We wrap train_full & valid_data into a single validation set
+val_rs <- validation_set(split_obj)  
+tune_res <- tune_grid(
+  wf,
+  resamples = val_rs,
+  grid      = grid,
+  metrics   = metric_set(rmse, rsq, mae)
+)
+
+# 7. Select best parameters
+best_params <- select_best(tune_res, "rmse")
+
+# 8. Finalize workflow with chosen hyperparameters
+final_wf <- finalize_workflow(wf, best_params)
+
+# 9. Fit on train+validation, test on held-out data
+final_fit <- last_fit(
+  final_wf,
+  initial_split(df, prop = 0.8)      # 80% train+valid, 20% test
+)
+
+# 10. Collect and display metrics
+collect_metrics(final_fit)
+```
+
+```{r}
+
+grid_fit <- lm(stab ~., data=grid_stability)
+
+plot(grid_fit)
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+wave_energy<-readARFF("/Users/justinmai/Downloads/file22f16310c401a.arff", data.reader = "readr", tmp.file = tempfile())
+
+wave_fit <- lm(energy_total~., data = wave_energy)
+
+plot(wave_fit)
+
+
+cor_matrix <- cor(wave_energy)
+
+highly_correlated_pair <- cor_matrix %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "var1") %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "correlation") %>%
+  filter(abs(correlation) > 0.75 & var1 != var2) %>%
+  mutate(sorted_vars = purrr::map2_chr(var1, var2, ~ paste(sort(c(.x, .y)), collapse = "_"))) %>%
+  distinct(sorted_vars, .keep_all = TRUE) %>%
+  select(var1, var2, correlation)
+
+# Print the resulting pairs
+print(highly_correlated_pair)
+
+```
+
+```{r}
+
+video_trans<-readARFF("/Users/justinmai/Downloads/file22f1662968585.arff", data.reader = "readr", tmp.file = tempfile())
+
+video_fit <- lm(utime ~., data=video_trans)
+plot(video_fit)
+
+```
+
+```{r}
+
+library(MASS)
+
+numeric_data <- video_trans[, sapply(video_trans, is.numeric)]
+
+numeric_data <- na.omit(numeric_data)
+
+inv_cov <- ginv(cov(numeric_data))
+
+md <- mahalanobis(
+  x = numeric_data,
+  center = colMeans(numeric_data),
+  cov = inv_cov,
+  inverted = TRUE
+)
+
+threshold <- qchisq(p = 0.975, df = ncol(numeric_data) - 1)
+
+# Identify outliers
+outliers <- which(md > threshold)
+
+# How many outliers?
+length(outliers)
+```
+
+```{r}
+video_trans_numeric <- select(video_trans, where(is.numeric))
+
+
+cor_matrix <- cor(video_trans_numeric)
+
+highly_correlated_pair <- cor_matrix %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "var1") %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "correlation") %>%
+  filter(abs(correlation) > 0.75 & var1 != var2) %>%
+  mutate(sorted_vars = purrr::map2_chr(var1, var2, ~ paste(sort(c(.x, .y)), collapse = "_"))) %>%
+  distinct(sorted_vars, .keep_all = TRUE) %>%
+  select(var1, var2, correlation)
+
+
+print(highly_correlated_pair)
+
+
+```
+
+```{r}
+
+sarcos<-readARFF("/Users/justinmai/Downloads/file22f166a1669bb.arff", data.reader = "readr", tmp.file = tempfile())
+
+sarcos_fit <- lm(V22~., data = sarcos)
+plot(sarcos_fit)
+
+
+#/////////////////////////////////////////////////////////
+
+
+numeric_data <- sarcos[, sapply(sarcos, is.numeric)]
+
+numeric_data <- na.omit(numeric_data)
+
+inv_cov <- ginv(cov(numeric_data))
+
+md <- mahalanobis(
+  x = numeric_data,
+  center = colMeans(numeric_data),
+  cov = inv_cov,
+  inverted = TRUE
+)
+
+threshold <- qchisq(p = 0.975, df = ncol(numeric_data) - 1)
+
+
+outliers <- which(md > threshold)
+
+
+length(outliers)
+
+
+#/////////////////////////////////////////////////////////
+
+sarcos_numeric <- select(sarcos, where(is.numeric))
+
+
+cor_matrix <- cor(sarcos_numeric)
+
+highly_correlated_pair <- cor_matrix %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "var1") %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "correlation") %>%
+  filter(abs(correlation) > 0.75 & var1 != var2) %>%
+  mutate(sorted_vars = purrr::map2_chr(var1, var2, ~ paste(sort(c(.x, .y)), collapse = "_"))) %>%
+  distinct(sorted_vars, .keep_all = TRUE) %>%
+  select(var1, var2, correlation)
+
+
+print(highly_correlated_pair)
+
+
+```
+
+```{r}
+
+
+
+sarcos<-readARFF("/Users/justinmai/Downloads/file22f1653ed424d.arff", data.reader = "readr", tmp.file = tempfile())
+sarcos_fit <- lm(median_housing~., data = sarcos)
+plot(sarcos_fit)
+
+
+
+#/////////////////////////////////////////////////////////
+
+
+numeric_data <- sarcos[, sapply(sarcos, is.numeric)]
+
+numeric_data <- na.omit(numeric_data)
+
+inv_cov <- ginv(cov(numeric_data))
+
+md <- mahalanobis(
+  x = numeric_data,
+  center = colMeans(numeric_data),
+  cov = inv_cov,
+  inverted = TRUE
+)
+
+threshold <- qchisq(p = 0.975, df = ncol(numeric_data) - 1)
+
+
+outliers <- which(md > threshold)
+
+
+length(outliers)
+
+
+#/////////////////////////////////////////////////////////
+
+sarcos_numeric <- select(sarcos, where(is.numeric))
+
+
+cor_matrix <- cor(sarcos_numeric)
+
+highly_correlated_pair <- cor_matrix %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "var1") %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "correlation") %>%
+  filter(abs(correlation) > 0.75 & var1 != var2) %>%
+  mutate(sorted_vars = purrr::map2_chr(var1, var2, ~ paste(sort(c(.x, .y)), collapse = "_"))) %>%
+  distinct(sorted_vars, .keep_all = TRUE) %>%
+  select(var1, var2, correlation)
+
+
+print(highly_correlated_pair)
+
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(readr)
+
+#' @exampleS
+#'
+#' # --- Example 1: XGBoost Model ---
+#' # xgb_spec <- boost_tree(
+#' #   trees = tune(),
+#' #   tree_depth = tune(),
+#' #   learn_rate = 0.1
+#' # ) |>
+#' #   set_engine("xgboost") |>
+#' #   set_mode("regression")
+#'
+#' # xgb_results <- run_ml_analysis(
+#' #   model_spec = xgb_spec,
+#' #   file_path = "sample_data.csv",
+#' #   target_variable = "y"
+#' # )
+#' # print(xgb_results$final_metrics)
+#'
+#' # --- Example 2: Random Forest Model ---
+#' # rf_spec <- rand_forest(
+#' #   mtry = tune(),
+#' #   trees = 1000,
+#' #   min_n = tune()
+#' # ) |>
+#' #   set_engine("ranger") |>
+#' #   set_mode("regression")
+#'
+#' # rf_results <- run_ml_analysis(
+#' #   model_spec = rf_spec,
+#' #   file_path = "sample_data.csv",
+#' #   target_variable = "y"
+#' # )
+#' # print(rf_results$final_metrics)
+
+run_ml_analysis <- function(model_spec,
+                            file_path,
+                            target_variable,
+                            train_prop = 0.6,
+                            validation_prop = 0.2,
+                            tune_grid_size = 20,
+                            seed = 123) {
+
+
+  tryCatch({
+    df <- read_csv(file_path, show_col_types = FALSE)
+  }, error = function(e) {
+    stop("Error reading the file. Please check if the file_path is correct.")
+  })
+
+  if (!target_variable %in% names(df)) {
+    stop(paste("The target variable '", target_variable, "' was not found in the data.", sep = ""))
+  }
+
+  target_sym <- rlang::sym(target_variable)
+
+
+  set.seed(seed)
+  split_obj <- initial_validation_split(
+    df,
+    strata = !!target_sym,
+    prop = c(train_prop, validation_prop)
+  )
+  cat("Data splitting complete.\n")
+  cat("Training set size:", nrow(training(split_obj)), "\n")
+  cat("Validation set size:", nrow(validation(split_obj)), "\n")
+  cat("Test set size:", nrow(testing(split_obj)), "\n\n")
+
+
+  rec <- recipe(!!target_sym ~ ., data = training(split_obj)) |>
+    step_rm(all_predictors(), -all_numeric()) |>
+    step_dummy(all_nominal(), one_hot = TRUE) |>
+    step_zv(all_predictors()) |>
+    step_corr(all_numeric(), threshold = 0.9) |>
+    step_normalize(all_numeric())
+
+  
+  wf <- workflow() |>
+    add_recipe(rec) |>
+    add_model(model_spec) 
+
+  
+  set.seed(seed)
+  grid <- grid_latin_hypercube(
+    extract_parameter_set_dials(wf),
+    size = tune_grid_size
+  )
+
+  val_rs <- validation_set(split_obj)
+
+  cat("Starting hyperparameter tuning...\n")
+  tune_res <- tune_grid(
+    wf,
+    resamples = val_rs,
+    grid      = grid,
+    metrics   = metric_set(rmse, rsq, mae)
+  )
+  cat("Tuning complete.\n\n")
+
+  best_params <- select_best(tune_res, "rmse")
+  cat("Best hyperparameters selected:\n")
+  print(best_params)
+  cat("\n")
+
+  
+  final_wf <- finalize_workflow(wf, best_params)
+
+  
+  final_split_prop <- train_prop + validation_prop
+  final_split <- initial_split(df, prop = final_split_prop, strata = !!target_sym)
+
+  cat("Fitting final model and evaluating on the test set...\n")
+  final_fit <- last_fit(
+    final_wf,
+    final_split
+  )
+  cat("Final evaluation complete.\n\n")
+
+  final_metrics <- collect_metrics(final_fit)
+  cat("Final performance metrics on the test set:\n")
+  print(final_metrics)
+  cat("\n")
+
+  
+  return(
+    list(
+      final_metrics = final_metrics,
+      best_hyperparameters = best_params,
+      final_fitted_workflow = final_fit
+    )
+  )
+}
+
+
+
+```
+
+```{r}
+
+sarcos<-readARFF("/Users/justinmai/Downloads/file22f166a1669bb.arff", data.reader = "readr", tmp.file = tempfile())
+```
