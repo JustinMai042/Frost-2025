@@ -42,7 +42,6 @@ cat(paste("\n Fetched", length(simulated_datasets_list), "simulated datasets.\n"
 
 cat("\n Fetching OpenML-CTR23 Datasets \n")
 openml_datasets_list <- list()
-
 tryCatch({
   py_run_string("import openml; suite = openml.study.get_suite(353)")
   task_ids <- py$suite$tasks
@@ -51,23 +50,34 @@ tryCatch({
     cat(paste(" -> Fetching OpenML task ID:", tid, "\n"))
     tryCatch({
       task <- getOMLTask(as.integer(tid))
+
+      
+      df        <- task$input$data.set$data
+      tgt_name  <- task$input$target.features[1]   # usually length-1
+
+      
+      
+      if (!identical(tgt_name, "target"))
+        names(df)[names(df) == tgt_name] <- "target"
+
       dataset_name <- task$input$data.set$desc$name
-      
-      if (dataset_name %in% names(openml_datasets_list)) {
+      if (dataset_name %in% names(openml_datasets_list))
         dataset_name <- paste0(dataset_name, "_", tid)
-      }
-      
-      openml_datasets_list[[dataset_name]] <- task$input$data.set$data
+
+      openml_datasets_list[[dataset_name]] <- df
+
     }, error = function(e) {
-      cat(paste(" Error fetching task", tid, ":", e$message, "\n"))
+      cat(paste("  Error fetching task", tid, ":", e$message, "\n"))
     })
   }
-  cat(paste("\n Fetched", length(openml_datasets_list), "OpenML-CTR23 datasets.\n"))
-  
+
+  cat(paste("\nFetched", length(openml_datasets_list),
+            "OpenML-CTR23 datasets (each with a column named 'target').\n"))
+
 }, error = function(e) {
-  cat(" Could not fetch OpenML suite.\n")
-  cat(e$message, "\n")
+  cat("Could not fetch OpenML suite.\n", e$message, "\n")
 })
+
 
 cat(paste("\n All", length(openml_datasets_list), "datasets have been fetched into the 'openml_datasets_list'.\n"))
 
