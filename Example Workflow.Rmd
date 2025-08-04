@@ -1,0 +1,200 @@
+---
+title: "Example Workflow"
+author: "Colin Hassett"
+date: "2025-07-29"
+output: html_document
+---
+
+## Example Workflow
+
+# Data Splitting
+
+```{r}
+stab_df <- read.table("C:/Users/nerdc/Downloads/file22f1652de1c8a.txt", sep = ",", skip = 16, col.names = c("tau1", "tau2", "tau3", "tau4", "p1", "p2", "p3", "p4", "g1", "g2", "g3", "g4", "stab", "stabf"))
+stab_df
+```
+```{r}
+compress_df <- read.table("C:/Users/nerdc/OneDrive/Desktop/regression/data/compress_stren/compress_stren_R.dat", header = TRUE)
+
+compress_df
+```
+
+
+```{r}
+set.seed(123)
+split_obj <- initial_validation_split(
+  compress_df,
+  strata = NULL,
+  prop = c(0.6, 0.2),
+  pool = 0.1
+)
+
+train_full <- training(split_obj)
+valid_data <- validation(split_obj)
+test_data  <- testing(split_obj)
+```
+
+```{r}
+rec <- recipe(output ~ ., data = train_full) |>
+  step_rm(all_predictors(), -all_numeric()) |>
+  step_dummy(all_nominal(), one_hot = TRUE) |>
+  step_zv(all_predictors()) |>
+  step_corr(all_numeric(), threshold = 0.9) |>
+  step_normalize(all_numeric())
+
+```
+
+# Model Specifications
+
+```{r}
+linear_spec <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+
+boost_spec <- boost_tree(
+  trees = tune(),
+  tree_depth = tune(),
+  learn_rate = 0.1
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+lasso_spec <- linear_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet") %>%
+  set_mode("regression")
+
+ridge_spec <- linear_reg(penalty = tune(), mixture = 0) %>%
+  set_engine("glmnet") %>%
+  set_mode("regression")
+
+enet_spec <- linear_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet") %>%
+  set_mode("regression")
+
+rforest_spec <- rand_forest(
+  mtry = tune(),
+  trees = tune(),
+  min_n = tune()
+) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("regression")
+
+mlp_spec <- mlp(
+  hidden_units = tune(),  # like `size`
+  penalty = tune(),       # like `decay`
+  epochs = 100            # fixed number of iterations (default for `nnet`)
+) %>%
+  set_engine("nnet") %>%
+  set_mode("regression")
+
+mars_spec <- bag_mars(num_terms = tune()) %>%
+  set_engine("earth") %>%
+  set_mode("regression")
+
+bart_spec <- bart(trees = tune()) %>%
+  set_mode("regression") %>%
+  set_engine("dbarts")
+
+model_specs <- list(
+  boost = boost_spec,
+  lasso = lasso_spec,
+  ridge = ridge_spec,
+  enet = enet_spec,
+  rforest = rforest_spec,
+  mlp = mlp_spec,
+  mars = mars_spec,
+  bart = bart_spec,
+  linear = linear_spec
+)
+```
+
+
+```{r}
+library(baguette)
+library(tidyr)
+
+results_list <- list()
+
+# Prep the recipe once for reuse
+prep_rec <- prep(rec, training = train_full)
+train_data <- bake(prep_rec, new_data = NULL)
+
+val_rs <- validation_set(split_obj)
+
+for (model_name in names(model_specs)) {
+  cat("Fitting model:", model_name, "\n")
+  current_spec <- model_specs[[model_name]]
+  
+  wf <- workflow() |>
+    add_recipe(rec) |>
+    add_model(current_spec)
+ 
+  
+  # Extract and finalize parameters
+  params <- extract_parameter_set_dials(wf)
+  
+  if (nrow(params) > 0) {
+    if ("mtry" %in% params$id) {
+    mtry_data <- bake(prep_rec, new_data = NULL) |>
+      select(-output)  # Remove outcome
+    params <- finalize(params, mtry_data)
+    }
+
+    grid <- grid_latin_hypercube(
+      params,
+      size = 20
+      )
+    start_time <- Sys.time()
+    
+    tune_res <- tune_grid(
+      wf,
+      resamples = val_rs,
+      grid = grid,
+      metrics = metric_set(rmse, rsq, mae)
+    )
+    
+    best_params <- select_best(tune_res, metric = "rmse")
+  
+    final_wf <- finalize_workflow(wf, best_params)
+    
+    final_fit <- last_fit(
+      final_wf,
+      split = split_obj
+    )
+    
+    end_time <- Sys.time()
+  } else {
+    start_time <- Sys.time()
+    
+    final_fit <- last_fit(wf, split = split_obj)
+    
+    end_time <- Sys.time()
+  }
+  
+  duration <- as.numeric(difftime(end_time, start_time, units = "secs"))
+  
+  metrics <- collect_metrics(final_fit) |>
+    select(.metric, .estimate) |>
+    pivot_wider(names_from = .metric, values_from = .estimate) |>
+    mutate(model = model_name,
+           time_secs = duration
+           )
+  
+  results_list[[model_name]] <- metrics
+}
+
+all_results <- bind_rows(results_list) |>
+  relocate(model, .before = everything()) |>
+  mutate(
+    rank_rsq = dense_rank(desc(rsq)),
+    rank_time = dense_rank(time_secs)
+  )
+
+
+all_results
+
+```
+```{r}
+
+```
+
