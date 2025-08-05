@@ -135,6 +135,18 @@ model_specs <- list(
 )
 ```
 
+# resample data 
+
+```{r}
+openml_datasets_trimmed <- purrr::imap(openml_datasets_list, ~ {
+  if (nrow(.x) > 5000) {
+    dplyr::slice_sample(.x, n = 5000)
+  } else {
+    .x
+  }
+})
+```
+
 
 ```{r}
 library(baguette)
@@ -144,8 +156,8 @@ library(kknn)
 
 all_results <- list()
 
-for (dataset_name in names(openml_datasets_list)) {
-  df <- openml_datasets_list[[dataset_name]]
+for (dataset_name in names(openml_datasets_trimmed)) {
+  df <- openml_datasets_trimmed[[dataset_name]]
   
   split_obj <- initial_validation_split(
     df,
@@ -158,6 +170,13 @@ for (dataset_name in names(openml_datasets_list)) {
   #valid_data <- validation(split_obj)
   test_data  <- testing(split_obj)
   val_rs <- validation_set(split_obj)
+  
+  rec <- recipe(target ~ ., data = train_full) |>
+    step_rm(all_predictors(), -all_numeric()) |>
+    step_dummy(all_nominal(), one_hot = TRUE) |>
+    step_zv(all_predictors()) |>
+    step_corr(all_numeric(), threshold = 0.9) |>
+    step_normalize(all_numeric())
   
   # Prep the recipe once for reuse
   prep_rec <- prep(rec, training = train_full)
