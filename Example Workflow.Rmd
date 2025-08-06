@@ -138,6 +138,7 @@ model_specs <- list(
 # resample data 
 
 ```{r}
+set.seed(123)
 openml_datasets_trimmed <- purrr::imap(openml_datasets_list, ~ {
   if (nrow(.x) > 5000) {
     dplyr::slice_sample(.x, n = 5000)
@@ -147,17 +148,12 @@ openml_datasets_trimmed <- purrr::imap(openml_datasets_list, ~ {
 })
 ```
 
+# Running it on one data set
 
 ```{r}
-library(baguette)
-library(tidyr)
-library(kernlab)
-library(kknn)
-
 all_results <- list()
-
-for (dataset_name in names(openml_datasets_trimmed)) {
-  df <- openml_datasets_trimmed[[dataset_name]]
+dataset_name <- "abalone"
+df <- openml_datasets_trimmed[[1]]
   
   split_obj <- initial_validation_split(
     df,
@@ -189,10 +185,15 @@ for (dataset_name in names(openml_datasets_trimmed)) {
     
     current_spec <- model_specs[[model_name]]
     
-    wf <- workflow() |>
-      add_recipe(rec) |>
+    wf <- workflow() %>%
+      add_recipe(rec) %>%
       add_model(current_spec)
-   
+    
+    params <- extract_parameter_set_dials(wf)
+      wf <- workflow() |>
+        add_recipe(rec) |>
+        add_model(current_spec)
+     
     # Extract and finalize parameters
     params <- extract_parameter_set_dials(wf)
     
@@ -244,11 +245,129 @@ for (dataset_name in names(openml_datasets_trimmed)) {
              time_secs = duration
              )
     
-    dataset_results[[model_name]] <- metrics
-  }
+      dataset_results[[model_name]] <- metrics
+    }
   
   dataset_df <- bind_rows(dataset_results) %>%
-    relocate(dataset, model, .before = everything()) %>%
+    mutate(
+      rank_rsq = min_rank(desc(rsq)),
+      rank_time = min_rank(time_secs)
+    )
+
+  all_results[[dataset_name]] <- dataset_df
+```
+
+
+# Running it on 5 data sets
+
+```{r}
+library(baguette)
+library(tidyr)
+library(kernlab)
+library(kknn)
+library(purrr)
+
+openml_datasets_trimmed <- openml_datasets_trimmed[1:5]
+
+all_results <- list()
+
+for (dataset_name in names(openml_datasets_trimmed)) {
+  df <- openml_datasets_trimmed[[dataset_name]]
+  
+  split_obj <- initial_validation_split(
+    df,
+    strata = NULL,
+    prop = c(0.6, 0.2),
+    pool = 0.1
+  )
+
+  train_full <- training(split_obj)
+  #valid_data <- validation(split_obj)
+  test_data  <- testing(split_obj)
+  val_rs <- validation_set(split_obj)
+  
+  rec <- recipe(target ~ ., data = train_full) |>
+    step_rm(all_predictors(), -all_numeric()) |>
+    step_dummy(all_nominal(), one_hot = TRUE) |>
+    step_zv(all_predictors()) |>
+    step_corr(all_numeric(), threshold = 0.9) |>
+    step_normalize(all_numeric())
+  
+  # Prep the recipe once for reuse
+  prep_rec <- prep(rec, training = train_full)
+  train_data <- bake(prep_rec, new_data = NULL)
+  
+  dataset_results <- list()
+  
+  for (model_name in names(model_specs)) {
+    cat("Fitting", model_name, "on", dataset_name, "\n")
+    
+    current_spec <- model_specs[[model_name]]
+    
+    wf <- workflow() %>%
+      add_recipe(rec) %>%
+      add_model(current_spec)
+    
+    params <- extract_parameter_set_dials(wf)
+      wf <- workflow() |>
+        add_recipe(rec) |>
+        add_model(current_spec)
+     
+    # Extract and finalize parameters
+    params <- extract_parameter_set_dials(wf)
+    
+    if (nrow(params) > 0) {
+      if ("mtry" %in% params$id) {
+      mtry_data <- bake(prep_rec, new_data = NULL) |>
+        select(-target)  # Remove outcome
+      params <- finalize(params, mtry_data)
+      }
+  
+      grid <- grid_latin_hypercube(
+        params,
+        size = 20
+        )
+      start_time <- Sys.time()
+      
+      tune_res <- tune_grid(
+        wf,
+        resamples = val_rs,
+        grid = grid,
+        metrics = metric_set(rmse, rsq, mae)
+      )
+      
+      best_params <- select_best(tune_res, metric = "rmse")
+    
+      final_wf <- finalize_workflow(wf, best_params)
+      
+      final_fit <- last_fit(
+        final_wf,
+        split = split_obj
+      )
+      
+      end_time <- Sys.time()
+    } else {
+      start_time <- Sys.time()
+      
+      final_fit <- last_fit(wf, split = split_obj)
+      
+      end_time <- Sys.time()
+    }
+    
+    duration <- as.numeric(difftime(end_time, start_time, units = "secs"))
+    
+    metrics <- collect_metrics(final_fit) |>
+      select(.metric, .estimate) |>
+      pivot_wider(names_from = .metric, values_from = .estimate) |>
+      mutate(model = model_name,
+             data_set = dataset_name,
+             time_secs = duration
+             )
+    
+      dataset_results[[model_name]] <- metrics
+    }
+  
+  dataset_df <- bind_rows(dataset_results) %>%
     mutate(
       rank_rsq = min_rank(desc(rsq)),
       rank_time = min_rank(time_secs)
@@ -263,6 +382,4 @@ final_results <- bind_rows(all_results)
 final_results
 
 ```
-
-
 
