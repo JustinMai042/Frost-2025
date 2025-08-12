@@ -1,0 +1,363 @@
+---
+title: "Data diagnostics"
+author: "Colin Hassett"
+date: "2025-08-12"
+output: html_document
+---
+
+```{r}
+library(lmtest)     # for bptest
+library(MASS)       # for ginv
+library(stats)      # for shapiro.test
+library(tibble)     # for returning a nice summary table
+
+```
+
+```{r}
+run_diagnostics <- function(df, target_col, corr_thresh = 0.9) {
+  # Ensure target exists
+  if (!target_col %in% names(df)) {
+    stop("Target column not found.")
+  }
+
+  # Filter numeric columns and drop NAs
+  numeric_data <- df[, sapply(df, is.numeric)]
+  numeric_data <- na.omit(numeric_data)
+
+  if (nrow(numeric_data) < 5) {
+    stop("Too few complete cases for diagnostics.")
+  }
+
+  # Outcome and predictors
+  y <- numeric_data[[target_col]]
+  X <- numeric_data[, setdiff(names(numeric_data), target_col)]
+
+  # Bail early if there are no predictors
+  if (ncol(X) < 1) {
+    stop("No predictors available after removing target.")
+  }
+  
+  # Fit linear model
+  formula <- as.formula(paste(target_col, "~ ."))
+  lm_fit <- lm(formula, data = numeric_data)
+  
+  # 1. Breusch-Pagan test for heteroscedasticity
+  bp_test <- tryCatch({
+    bptest(lm_fit)
+  }, error = function(e) NULL)
+
+  # 2. Mahalanobis outlier detection
+  inv_cov <- ginv(cov(numeric_data))
+  md <- mahalanobis(
+    x = numeric_data,
+    center = colMeans(numeric_data),
+    cov = inv_cov,
+    inverted = TRUE
+  )
+  threshold <- qchisq(p = 0.975, df = ncol(numeric_data) - 1)
+  n_outliers <- sum(md > threshold)
+
+  # 3. Correlation pairs above threshold
+  cor_matrix <- cor(X)
+  cor_pairs <- sum(abs(cor_matrix[upper.tri(cor_matrix)]) > corr_thresh)
+
+  # 4. Normality of target variable
+  shapiro_target <- shapiro.test(y)
+  normal_target <- shapiro_target$p.value > 0.05
+
+  # 5. Normality of residuals
+  residuals <- residuals(lm_fit)
+  shapiro_resid <- shapiro.test(residuals)
+  normal_resid <- shapiro_resid$p.value > 0.05
+
+  # 6. Number of numeric predictors
+  n_predictors <- ncol(X)
+
+  # Output summary
+  return(tibble(
+    heteroscedasticity_p = if (!is.null(bp_test)) bp_test$p.value else NA_real_,
+    heteroscedasticity_present = if (!is.null(bp_test)) bp_test$p.value < 0.05 else NA,
+    num_outliers = n_outliers,
+    correlated_pairs_above_threshold = cor_pairs,
+    normal_target = normal_target,
+    normal_residuals = normal_resid,
+    num_predictors = n_predictors
+  ))
+  
+  
+}
+
+```
+
+
+```{r}
+dataset_name <- "abalone"
+df <- openml_datasets_trimmed[[1]]
+df2 <- openml_datasets_trimmed[["forest_fires"]]
+
+diagnostics <- run_diagnostics(df, target_col = "target")
+```
+
+
+
+```{r}
+
+all_results <- list()
+for (dataset_name in names(openml_datasets_trimmed)) {
+  df <- openml_datasets_trimmed[[dataset_name]]
+  run_diagnostics(df, target_col = "target")
+}
+all_results[[dataset_name]] <- dataset_df
+final_results <- bind_rows(all_results)
+final_results
+
+```
+```{r}
+all_results <- list()
+
+for (dataset_name in names(openml_datasets_trimmed)) {
+  df <- openml_datasets_trimmed[[dataset_name]]
+  
+  diag_result <- run_diagnostics(df, target_col = "target") %>%
+    mutate(dataset = dataset_name)
+  
+  all_results[[dataset_name]] <- diag_result
+}
+
+final_results <- bind_rows(all_results)
+
+final_results
+
+```
+
+```{r}
+run_diagnostics <- function(df, target_col, corr_thresh = 0.9) {
+  if (!target_col %in% names(df)) stop("Target column not found.")
+  
+  df <- na.omit(df)
+  
+  # Fit linear model on all predictors
+  formula <- as.formula(paste(target_col, "~ ."))
+  lm_fit <- lm(formula, data = df)
+  
+  # 1. Breusch-Pagan test
+  bp_test <- bptest(lm_fit)
+  
+  # 2. Outlier detection using Mahalanobis on numeric data only
+  numeric_data <- df[, sapply(df, is.numeric)]
+  if (ncol(numeric_data) < 2) {
+    n_outliers <- NA_integer_
+    cor_pairs <- NA_integer_
+  } else {
+    inv_cov <- ginv(cov(numeric_data))
+    md <- mahalanobis(
+      x = numeric_data,
+      center = colMeans(numeric_data),
+      cov = inv_cov,
+      inverted = TRUE
+    )
+    threshold <- qchisq(p = 0.975, df = ncol(numeric_data) - 1)
+    n_outliers <- sum(md > threshold)
+    
+    # 3. Correlation pairs
+    cor_matrix <- cor(numeric_data[, setdiff(names(numeric_data), target_col), drop = FALSE])
+    cor_pairs <- sum(abs(cor_matrix[upper.tri(cor_matrix)]) > corr_thresh)
+  }
+  
+  # 4. Normality tests
+  shapiro_target <- shapiro.test(df[[target_col]])
+  shapiro_resid <- shapiro.test(residuals(lm_fit))
+  
+  # 5. Number of predictors (non-target)
+  n_predictors <- ncol(df) - 1
+  
+  return(tibble(
+    heteroscedasticity_p = bp_test$p.value,
+    heteroscedasticity_present = bp_test$p.value < 0.05,
+    num_outliers = n_outliers,
+    correlated_pairs_above_threshold = cor_pairs,
+    normal_target = shapiro_target$p.value > 0.05,
+    normal_residuals = shapiro_resid$p.value > 0.05,
+    num_predictors = n_predictors
+  ))
+}
+
+```
+
+
+```{r}
+dataset_name <- "abalone"
+df <- openml_datasets_trimmed[[1]]
+df2 <- openml_datasets_trimmed[["forest_fires"]]
+
+diagnostics <- run_diagnostics(df2, target_col = "target")
+```
+
+```{r}
+all_results <- list()
+
+for (dataset_name in names(openml_datasets_trimmed)) {
+  df <- openml_datasets_trimmed[[dataset_name]]
+  
+  diag_result <- run_diagnostics(df, target_col = "target") %>%
+    mutate(dataset = dataset_name)
+  
+  all_results[[dataset_name]] <- diag_result
+}
+
+final_results <- bind_rows(all_results)
+
+final_results
+```
+
+```{r}
+all_results <- list()
+
+for (dataset_name in names(openml_datasets_trimmed)) {
+  df <- openml_datasets_trimmed[[dataset_name]]
+  diag_result <- run_diagnostics(df, target_col = "target") %>%
+    dplyr::mutate(dataset = dataset_name)
+  all_results[[dataset_name]] <- diag_result
+}
+
+final_results <- dplyr::bind_rows(all_results)
+final_results
+
+```
+
+```{r}
+library(lmtest)   # bptest
+library(MASS)     # ginv
+library(tibble)
+library(dplyr)
+
+run_diagnostics <- function(df, target_col, corr_thresh = 0.9) {
+  if (!target_col %in% names(df)) {
+    stop(sprintf("Target column '%s' not found.", target_col))
+  }
+
+  # Coerce character -> factor (so lm can handle them)
+  df <- df %>% mutate(across(where(is.character), as.factor))
+
+  # Remove rows with NA in *any* used column (simplest consistent rule)
+  df <- tidyr::drop_na(df)
+
+  # Remove zero-variance / single-level predictors (but keep target)
+  pred_cols <- setdiff(names(df), target_col)
+  keep_preds <- pred_cols[vapply(df[pred_cols], function(x) length(unique(x)) > 1, logical(1))]
+  df_model <- df[, c(target_col, keep_preds), drop = FALSE]
+
+  # If no predictors remain, return a safe summary
+  if (length(keep_preds) < 1) {
+    return(tibble(
+      heteroscedasticity_p = NA_real_,
+      heteroscedasticity_present = NA,
+      num_outliers = NA_integer_,
+      correlated_pairs_above_threshold = 0L,
+      normal_target = NA,
+      normal_residuals = NA,
+      num_predictors = ncol(df) - 1
+    ))
+  }
+
+  # Safe Shapiro helper (n must be 3..5000)
+  safe_shapiro <- function(x) {
+    n <- length(x)
+    if (n < 3) return(NA)
+    if (n > 5000) x <- sample(x, 5000)  # avoid warning; approximation is fine
+    stats::shapiro.test(x)$p.value > 0.05
+  }
+
+  # Fit linear model
+  form <- as.formula(paste(target_col, "~ ."))
+  lm_ok <- TRUE
+  lm_fit <- try(stats::lm(form, data = df_model), silent = TRUE)
+  if (inherits(lm_fit, "try-error")) lm_ok <- FALSE
+
+  # Breusch–Pagan (only if LM succeeded)
+  bp_p <- NA_real_
+  het_present <- NA
+  if (lm_ok) {
+    bp <- try(lmtest::bptest(lm_fit), silent = TRUE)
+    if (!inherits(bp, "try-error")) {
+      bp_p <- bp$p.value
+      het_present <- bp_p < 0.05
+    }
+  }
+
+  # Mahalanobis & correlation (numeric-only, exclude target if numeric)
+  numeric_df <- dplyr::select(df_model, where(is.numeric))
+  num_outliers <- NA_integer_
+  cor_pairs <- 0L
+
+  if (ncol(numeric_df) >= 2) {
+    # Mahalanobis
+    # Use ginv to handle singular covariance
+    covm <- stats::cov(numeric_df)
+    inv_cov <- MASS::ginv(covm)
+    md <- stats::mahalanobis(
+      x = numeric_df,
+      center = colMeans(numeric_df),
+      cov = inv_cov,
+      inverted = TRUE
+    )
+    # df for threshold: number of numeric vars
+    thresh <- stats::qchisq(0.975, df = ncol(numeric_df))
+    num_outliers <- sum(md > thresh)
+
+    # Correlation pairs among numeric predictors (exclude target if numeric)
+    num_pred_mat <- numeric_df
+    if (target_col %in% colnames(num_pred_mat)) {
+      num_pred_mat <- dplyr::select(num_pred_mat, -all_of(target_col))
+    }
+    if (ncol(num_pred_mat) >= 2) {
+      cm <- stats::cor(num_pred_mat)
+      cor_pairs <- sum(abs(cm[upper.tri(cm)]) > corr_thresh)
+    } else {
+      cor_pairs <- 0L
+    }
+  } else {
+    # Not enough numeric columns for MD/corr
+    num_outliers <- NA_integer_
+    cor_pairs <- 0L
+  }
+
+  # Normality: target & residuals
+  normal_target <- NA
+  if (is.numeric(df_model[[target_col]])) {
+    normal_target <- safe_shapiro(df_model[[target_col]])
+  }
+  normal_resid <- NA
+  if (lm_ok) {
+    res <- stats::residuals(lm_fit)
+    normal_resid <- safe_shapiro(res)
+  }
+
+  tibble(
+    heteroscedasticity_p = bp_p,
+    heteroscedasticity_present = het_present,
+    num_outliers = num_outliers,
+    correlated_pairs_above_threshold = cor_pairs,
+    normal_target = normal_target,
+    normal_residuals = normal_resid,
+    num_predictors = ncol(df) - 1
+  )
+}
+
+```
+
+```{r}
+all_results <- list()
+
+for (dataset_name in names(openml_datasets_trimmed)) {
+  df <- openml_datasets_trimmed[[dataset_name]]
+  diag_result <- run_diagnostics(df, target_col = "target") %>%
+    dplyr::mutate(dataset = dataset_name)
+  all_results[[dataset_name]] <- diag_result
+}
+
+final_results <- dplyr::bind_rows(all_results)
+final_results
+
+```
+
