@@ -1,0 +1,271 @@
+---
+title: "Results visualization"
+author: "Colin Hassett"
+date: "2025-08-18"
+output: html_document
+---
+
+```{r}
+
+library(readxl)
+
+results_df <- read_excel(
+  "C:/Users/nerdc/OneDrive/Desktop/Frost Research/model_results2.xlsx",
+  
+)
+
+#col.names = c("mae", "rmse", "rsq", "model", "data_set", 
+               # "time_secs", "n_rows", "n_cols", "rank_rsq", "rank_time")
+```
+
+```{r}
+library(ggplot2)
+
+avg_by_dataset <- results_df %>%
+  mutate(rsq = as.numeric(rsq)) %>%
+  group_by(data_set) %>%
+  summarise(
+    avg_rsq = mean(rsq, na.rm = TRUE),
+    # assumes each dataset has a single row count; use max() if it varies
+    n_rows  = dplyr::first(na.omit(n_rows)),
+    .groups = "drop"
+  )
+
+```
+
+```{r}
+ggplot(avg_by_dataset, aes(x = n_rows, y = avg_rsq)) +
+  geom_point(size = 2, color = "blue3") +
+  labs(
+    x = "Number of rows in dataset",
+    y = "Average R²",
+    title = "Average R² by Dataset vs. Dataset Size"
+  ) +
+  theme_minimal(base_size = 12)
+  
+```
+```{r}
+ggplot(avg_by_dataset, aes(x = n_rows, y = avg_rsq)) +
+  geom_point(size = 3, color = "blue") +
+  labs(
+    x = "Number of rows in dataset",
+    y = "Average R²",
+    title = "Average R² by Dataset vs. Dataset Size"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+```
+```{r}
+ggplot(avg_by_dataset, aes(x = n_rows, y = avg_rsq)) +
+  geom_point(size = 3, color = "blue") +
+  labs(
+    x = "Number of rows in dataset",
+    y = NULL,  # hide the y-axis title
+    title = "Average R² by Dataset vs. Dataset Size",
+    subtitle = "Average R²"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.subtitle = element_text(size = 10))
+
+```
+
+```{r}
+avg_model_results <- results_df %>%
+  mutate(time_secs = as.numeric(time_secs)) %>%
+  group_by(model) %>%
+  summarise(
+    avg_runtime = mean(time_secs, na.rm = TRUE),
+    avg_ranktime = mean(rank_time, na.rm = TRUE),
+    avg_rsq = mean(rsq, na.rm = TRUE),
+    avg_rankrsq = mean(rank_rsq, na.rm = TRUE),
+    .groups = "drop"
+  )
+  
+
+```
+
+
+```{r}
+write.csv(avg_model_results,
+          "C:/Users/nerdc/OneDrive/Desktop/Frost Research/model_results.csv")
+
+```
+```{r}
+library(writexl)
+
+# Single sheet
+write_xlsx(avg_model_results,
+           "C:/Users/nerdc/OneDrive/Desktop/Frost Research/avg_model_results.xlsx")
+```
+
+```{r}
+avg_model_results %>%
+  mutate(model = fct_reorder(model, avg_rankrsq)) %>%
+  ggplot(aes(x = model, y = avg_rankrsq)) +
+  geom_col(fill = "steelblue") +
+  labs(x = "Model", y = "Average R² Rank", title = "Average R² Rank by Model", subtitle = "Lower is Better") +
+  theme_minimal()
+```
+```{r}
+library(dplyr)
+library(forcats)
+library(ggplot2)
+
+avg_model_results %>%
+  mutate(model = fct_reorder(model, -avg_rankrsq)) %>%  # lowest rank at top
+  ggplot(aes(x = avg_rankrsq, y = model)) +
+  geom_segment(aes(x = 0, xend = avg_rankrsq, y = model, yend = model),
+               linewidth = 0.8, color = "lightgrey") +
+  geom_point(size = 3, color = "darkgreen") +
+  labs(
+    x = "Average R² Rank",
+    y = NULL,
+    title = "Average R² Rank by Model (Lower is Better)"
+  ) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.05))) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank())
+
+```
+```{r}
+# install.packages(c("dplyr","tidyr","PMCMRplus","scmamp"))
+library(dplyr); library(tidyr)
+
+# ranks_df: dataset | model | rank  (1 = best)
+# 1) Build a ranks matrix: rows=datasets, cols=models
+mat_df <- results_df %>%
+  select(data_set, model, rank_rsq) %>%
+  pivot_wider(names_from = model, values_from = rank_rsq) %>%
+  drop_na()            # keep only complete blocks
+
+M <- as.matrix(mat_df %>% select(-data_set))
+k <- ncol(M); N <- nrow(M)
+
+# 2) Global test: Friedman (on ranks)
+fried <- stats::friedman.test(M)
+fried
+
+# Optional: Kendall's W (effect size, 0–1)
+Q <- as.numeric(fried$statistic)               # Friedman chi-square
+W <- Q / (N * (k - 1))
+W
+
+# 3) Post-hoc (all pairs) Nemenyi on ranks
+#    Use the original long data; it understands the block design.
+library(PMCMRplus)
+nem <- frdAllPairsNemenyiTest(rank ~ model | data_set, data = mat_df %>%
+                                pivot_longer(-data_set, names_to="model", values_to="rank"))
+nem
+
+# 4) Report average ranks + CD diagram (α = 0.05)
+library(scmamp)
+avg_ranks <- colMeans(M)      # lower = better
+plotCD(avg_ranks, N = N, alpha = 0.05, cex = 1.0)
+
+```
+```{r}
+
+# Matrix of adjusted p-values (this is what you want)
+P <- nem$p.value    # rows/cols = models; symmetric; diagonal NA
+
+# If you want a compact letter display (CLD):
+library(multcompView)
+letters <- multcompLetters(P >= 0.05)$Letters  # models sharing a letter are NOT different at α=0.05
+letters
+
+```
+
+```{r}
+mat_df <- results_df %>%
+  select(data_set, model, rank_time) %>%
+  pivot_wider(names_from = model, values_from = rank_time) %>%
+  drop_na()            # keep only complete blocks
+
+M <- as.matrix(mat_df %>% select(-data_set))
+k <- ncol(M); N <- nrow(M)
+
+# 2) Global test: Friedman (on ranks)
+fried <- stats::friedman.test(M)
+fried
+
+# Optional: Kendall's W (effect size, 0–1)
+Q <- as.numeric(fried$statistic)               # Friedman chi-square
+W <- Q / (N * (k - 1))
+W
+
+# 3) Post-hoc (all pairs) Nemenyi on ranks
+#    Use the original long data; it understands the block design.
+library(PMCMRplus)
+nem2 <- frdAllPairsNemenyiTest(rank ~ model | data_set, data = mat_df %>%
+                                pivot_longer(-data_set, names_to="model", values_to="rank"))
+nem2
+```
+```{r}
+P <- nem2$p.value    # rows/cols = models; symmetric; diagonal NA
+
+# If you want a compact letter display (CLD):
+library(multcompView)
+letters <- multcompLetters(P >= 0.05)$Letters  # models sharing a letter are NOT different at α=0.05
+letters
+```
+
+```{r}
+ggplot(results_df, aes(x = avgrank, y = 0)) +
+  geom_point(aes(y = 0), size = 3) +
+  geom_text(aes(label = model, y = 0.15), angle = 90, vjust = 0) +
+  annotate("segment",
+           x = min(results_df$avgrank),
+           xend = min(results_df$avgrank) + CD,
+           y = 0.45, yend = 0.45, linewidth = 1) +
+  annotate("text",
+           x = min(results_df$avgrank) + CD/2,
+           y = 0.52,
+           label = sprintf("CD = %.2f", CD)) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  labs(x = "Average rank (lower = better)", y = NULL,
+       title = "Critical Difference (CD) style rank plot") +
+  theme_minimal(base_size = 12) +
+  coord_cartesian(ylim = c(-0.2, 0.7), clip = "off") +
+  theme(plot.margin = margin(10, 30, 10, 30))
+
+```
+```{r}
+adj_results_df <- read.csv(
+  "C:/Users/nerdc/OneDrive/Desktop/Frost Research/ctr23_model_results_with_adj_rsq.csv",
+  
+)
+#"C:\Users\nerdc\OneDrive\Desktop\Frost Research\ctr23_model_results_with_adj_rsq.csv"
+```
+
+```{r}
+library(dplyr); library(tidyr)
+
+# ranks_df: dataset | model | rank  (1 = best)
+# 1) Build a ranks matrix: rows=datasets, cols=models
+mat_df <- adj_results_df %>%
+  select(dataset, model, rank_adj_rsq) %>%
+  pivot_wider(names_from = model, values_from = rank_adj_rsq) %>%
+  drop_na()            # keep only complete blocks
+
+M <- as.matrix(mat_df %>% select(-dataset))
+k <- ncol(M); N <- nrow(M)
+
+# 2) Global test: Friedman (on ranks)
+fried <- stats::friedman.test(M)
+fried
+
+# Optional: Kendall's W (effect size, 0–1)
+Q <- as.numeric(fried$statistic)               # Friedman chi-square
+W <- Q / (N * (k - 1))
+W
+
+# 3) Post-hoc (all pairs) Nemenyi on ranks
+#    Use the original long data; it understands the block design.
+library(PMCMRplus)
+nem <- frdAllPairsNemenyiTest(rank ~ model | dataset, data = mat_df %>%
+                                pivot_longer(-dataset, names_to="model", values_to="rank"))
+nem
+```
+
